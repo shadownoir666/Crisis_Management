@@ -85,5 +85,12 @@ class MasterState(TypedDict):
     # ── Route Planner output ──────────────────────────────────────────────────
     route_plan: Optional[List]       # list of route dicts from plan_all_routes()
 
-    # ── (Future) Communication Agent ─────────────────────────────────────────
+    # ── Communication Agent output ────────────────────────────────────────────
     dispatch_message: Optional[str]
+    
+    dispatch_result:  Optional[Dict]  # full output from dispatch_all():
+                                      # {"instructions", "sms_results",
+                                      #  "audio_files", "summary"}
+    dispatch_config: Optional[Dict]   # {"language", "send_sms", "generate_audio",
+                                      #  "to_number"}
+    field_reports: Optional[List[str]] # raw reports from ground teams

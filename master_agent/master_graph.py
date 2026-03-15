@@ -164,8 +164,9 @@ Flow:
               → update_people
                 → rescue_decision
                   → admin_resource
-                    → [approved] route_planner
-                                   → admin_route → END
+                   → [approved] route_planner
+                                   → admin_route
+                                       → communication → END
                     → [rejected]  rescue_decision  (loop until approved)
 
 """
@@ -186,6 +187,7 @@ from .master_nodes import (
     resource_approval_router,
     route_planner_node,    # BUG FIX: was commented out
     admin_route_node,      # BUG FIX: was commented out
+    communication_node,
 )
 
 # ── Build the graph ───────────────────────────────────────────────────────────
@@ -205,6 +207,7 @@ builder.add_node("rescue_decision", rescue_decision_node)
 builder.add_node("admin_resource",  admin_resource_node)
 builder.add_node("route_planner",   route_planner_node)   # BUG FIX: active now
 builder.add_node("admin_route",     admin_route_node)     # BUG FIX: active now
+builder.add_node("communication",   communication_node)
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -232,7 +235,8 @@ builder.add_conditional_edges(
 )
 
 builder.add_edge("route_planner",   "admin_route")   # BUG FIX: active now
-builder.add_edge("admin_route",     END)
+builder.add_edge("admin_route",    "communication")   # communication agent added
+builder.add_edge("communication",  END)
 
 # ── Compile ───────────────────────────────────────────────────────────────────
 
