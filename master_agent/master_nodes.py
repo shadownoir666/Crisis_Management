@@ -493,12 +493,13 @@ BUG 4 ─ blocked_masks (flood prob map) never forwarded to Route Agent
        (See also the updated vision_agent.py.)
 """
 
-from agents.vision_agent.vision_agent        import analyze_image
-from agents.resource_agent.drone_analysis    import get_most_affected_zones
-from agents.drone_agent.drone_nodes          import drone_decision_node, drone_dispatch_node
-from agents.drone_agent.drone_vision         import drone_vision_node
-from agents.resource_agent.rescue_decision_llm import allocate_rescue_resources_llm
-from agents.route_agent.route_agent          import plan_all_routes, print_routes
+from agents.vision_agent.vision_agent               import analyze_image
+from agents.resource_agent.drone_analysis           import get_most_affected_zones
+from agents.drone_agent.drone_nodes                 import drone_decision_node, drone_dispatch_node
+from agents.drone_agent.drone_vision                import drone_vision_node
+from agents.resource_agent.rescue_decision_llm      import allocate_rescue_resources_llm
+from agents.route_agent.route_agent                 import plan_all_routes, print_routes
+from agents.communication_agent.communication_agent import dispatch_all
 
 from db.update_from_vision  import update_zones_from_vision
 from db.update_people_count import update_people_count
@@ -682,6 +683,58 @@ def admin_route_node(state):
     return {}
 
 
+#────Communication Node────────────────────────────────────────────────────────────
+
+def communication_node(state):
+
+    print("\n[COMMUNICATION AGENT] Starting dispatch pipeline")
+
+    route_plan      = state.get("route_plan")      or []
+    zone_map        = state.get("zone_map")         or {}
+    people_counts   = state.get("people_counts")    or {}
+    field_reports   = state.get("field_reports")    or []
+    dispatch_config = state.get("dispatch_config")  or {}
+
+    if not route_plan:
+        print("[COMMUNICATION AGENT] WARNING: No route_plan in state — nothing to dispatch.")
+        return {
+            "dispatch_result":  {"instructions": {}, "sms_results": [], "audio_files": [], "summary": "No routes planned."},
+            "dispatch_message": "No routes planned.",
+        }
+
+    # Build zone_metadata from zone_map + people_counts
+    zone_metadata = {}
+    for zone_id, data in zone_map.items():
+        raw_severity = data.get("severity", 0)
+        if isinstance(raw_severity, float):
+            if raw_severity >= 0.7:
+                severity_label = "Critical"
+            elif raw_severity >= 0.4:
+                severity_label = "Moderate"
+            else:
+                severity_label = "Low"
+        else:
+            severity_label = str(raw_severity)
+        zone_metadata[zone_id] = {
+            "severity":     severity_label,
+            "victim_count": people_counts.get(zone_id, 0),
+        }
+
+    result = dispatch_all(
+        route_plans     = route_plan,
+        zone_metadata   = zone_metadata,
+        field_reports   = field_reports,
+        dispatch_config = dispatch_config,
+    )
+
+    print(f"[COMMUNICATION AGENT] Done — {len(result['instructions'])} instruction(s), {len(result['sms_results'])} SMS(es)")
+
+    return {
+        "dispatch_result":  result,
+        "dispatch_message": result["summary"],
+    }
+
+
 # ── Re-exports so master_graph.py can import everything from one place ─────────
 
 __all__ = [
@@ -697,4 +750,5 @@ __all__ = [
     "resource_approval_router",
     "route_planner_node",
     "admin_route_node",
+    "communication_node",
 ]

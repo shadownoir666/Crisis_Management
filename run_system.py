@@ -15,7 +15,13 @@ def run_system():
         try:
 
             master_graph.invoke({
-                "satellite_image": image
+                "satellite_image": image,
+                "field_reports":   [],
+                "dispatch_config": {
+                    "send_sms":       False,
+                    "generate_audio": True,
+                    "language":       "English",
+                }
             })
 
         except Exception as e:
