@@ -670,17 +670,21 @@ def route_planner_node(state):
 def admin_route_node(state):
     """
     Ask the operator to approve the route plan.
-    If rejected, raises an exception to halt the pipeline (routes must be
-    re-planned after fixing the rescue_plan — future improvement: loop back).
+    Approved  → communication node.
+    Rejected  → loops back to route_planner so new routes are computed.
+    The operator can reject multiple times until satisfied.
     """
     approved = admin_approval("Approve rescue routes?")
-    if not approved:
-        # For now, reject = hard stop. A future improvement would loop back
-        # to rescue_decision or route_planner with modified parameters.
-        raise RuntimeError("[ADMIN] Operator rejected the route plan. "
-                           "Rerun with adjusted parameters.")
-    print("[ADMIN] Routes approved")
-    return {}
+    if approved:
+        print("[ADMIN] Routes approved — proceeding to communication")
+    else:
+        print("[ADMIN] Routes rejected — re-running route planner")
+    return {"route_approved": approved}
+
+
+def route_approval_router(state):
+    """Conditional edge: approved → communication, rejected → route_planner."""
+    return "approved" if state.get("route_approved") else "rejected"
 
 
 #────Communication Node────────────────────────────────────────────────────────────
@@ -750,5 +754,6 @@ __all__ = [
     "resource_approval_router",
     "route_planner_node",
     "admin_route_node",
+    "route_approval_router",
     "communication_node",
 ]

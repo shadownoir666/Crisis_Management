@@ -82,6 +82,11 @@ class MasterState(TypedDict):
     # causing KeyError in resource_approval_router on some LangGraph versions.
     resource_approved: Optional[bool]
 
+    # ── Admin Route Approval output ───────────────────────────────────────────
+    # True  → proceed to communication
+    # False → loop back to route_planner for re-planning
+    route_approved: Optional[bool]
+
     # ── Route Planner output ──────────────────────────────────────────────────
     route_plan: Optional[List]       # list of route dicts from plan_all_routes()
 

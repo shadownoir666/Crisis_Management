@@ -164,10 +164,11 @@ Flow:
               → update_people
                 → rescue_decision
                   → admin_resource
-                   → [approved] route_planner
-                                   → admin_route
-                                       → communication → END
-                    → [rejected]  rescue_decision  (loop until approved)
+                    → [approved] route_planner
+                                    → admin_route
+                                      → [approved] communication → END
+                                      → [rejected] route_planner  (re-plan loop)
+                    → [rejected]  rescue_decision  (resource re-plan loop)
 
 """
 
@@ -187,6 +188,7 @@ from .master_nodes import (
     resource_approval_router,
     route_planner_node,    # BUG FIX: was commented out
     admin_route_node,      # BUG FIX: was commented out
+    route_approval_router, # routes rejected → loop back to route_planner
     communication_node,
 )
 
@@ -234,9 +236,20 @@ builder.add_conditional_edges(
     }
 )
 
-builder.add_edge("route_planner",   "admin_route")   # BUG FIX: active now
-builder.add_edge("admin_route",    "communication")   # communication agent added
-builder.add_edge("communication",  END)
+builder.add_edge("route_planner", "admin_route")
+
+# Conditional: admin approves routes → communication
+#              admin rejects  routes → route_planner (re-plan with same rescue_plan)
+builder.add_conditional_edges(
+    "admin_route",
+    route_approval_router,
+    {
+        "approved": "communication",
+        "rejected": "route_planner",   # re-run Dijkstra, operator can adjust base_locations etc.
+    }
+)
+
+builder.add_edge("communication", END)
 
 # ── Compile ───────────────────────────────────────────────────────────────────
 
