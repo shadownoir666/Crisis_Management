@@ -10,8 +10,13 @@ Two supported cases:
 
 Every other file in the Route Agent calls geo_reference to turn pixel/zone
 positions into real GPS coordinates before touching any road data.
+
+FIX (2026-03): All returned values are explicitly cast to native Python float
+so that LangGraph's MemorySaver (msgpack) can serialise them without raising
+"Type is not msgpack serializable: numpy.float64".
 """
 
+import math
 import numpy as np
 
 
@@ -38,33 +43,32 @@ def build_geo_transform(center_lat: float, center_lon: float, coverage_km: float
         top_left_lat, top_left_lon,
         lat_per_pixel, lon_per_pixel,
         image_width_px, image_height_px
+
+    All float values are native Python float (NOT numpy.float64).
     """
-    # 1 degree latitude  ≈ 111 km  (constant anywhere on Earth)
-    # 1 degree longitude ≈ 111 * cos(lat) km  (shrinks toward the poles)
-
+    # Use plain math functions to avoid numpy scalar types entirely
     km_per_deg_lat = 111.0
-    km_per_deg_lon = 111.0 * np.cos(np.radians(center_lat))
+    km_per_deg_lon = 111.0 * math.cos(math.radians(float(center_lat)))
 
-    total_lon_span = coverage_km / km_per_deg_lon
-    aspect_ratio   = image_height_px / image_width_px
-    total_lat_span = (coverage_km * aspect_ratio) / km_per_deg_lat
+    total_lon_span = float(coverage_km) / km_per_deg_lon
+    aspect_ratio   = float(image_height_px) / float(image_width_px)
+    total_lat_span = (float(coverage_km) * aspect_ratio) / km_per_deg_lat
 
     # Top-left corner (north-west)
-    top_left_lat = center_lat + (total_lat_span / 2)
-    top_left_lon = center_lon - (total_lon_span / 2)
+    top_left_lat = float(center_lat) + (total_lat_span / 2.0)
+    top_left_lon = float(center_lon) - (total_lon_span / 2.0)
 
     # Degrees per pixel
-    # Rows increase downward; latitude decreases going south → we subtract when converting.
-    lat_per_pixel = total_lat_span / image_height_px
-    lon_per_pixel = total_lon_span / image_width_px
+    lat_per_pixel = total_lat_span / float(image_height_px)
+    lon_per_pixel = total_lon_span / float(image_width_px)
 
     return {
-        "top_left_lat":    top_left_lat,
-        "top_left_lon":    top_left_lon,
-        "lat_per_pixel":   lat_per_pixel,
-        "lon_per_pixel":   lon_per_pixel,
-        "image_width_px":  image_width_px,
-        "image_height_px": image_height_px,
+        "top_left_lat":    float(top_left_lat),
+        "top_left_lon":    float(top_left_lon),
+        "lat_per_pixel":   float(lat_per_pixel),
+        "lon_per_pixel":   float(lon_per_pixel),
+        "image_width_px":  int(image_width_px),
+        "image_height_px": int(image_height_px),
     }
 
 
@@ -75,13 +79,14 @@ def pixel_to_latlon(px: float, py: float, transform: dict) -> tuple:
     px = column index (x, left → right)
     py = row    index (y, top  → bottom)
 
-    Image rows increase downward while latitude decreases southward,
-    so we subtract py * lat_per_pixel from the top-left latitude.
-    Longitude increases eastward, so we add px * lon_per_pixel.
+    Returns
+    -------
+    (lat, lon) tuple of native Python float values.
     """
-    lat = transform["top_left_lat"] - py * transform["lat_per_pixel"]
-    lon = transform["top_left_lon"] + px * transform["lon_per_pixel"]
-    return round(lat, 6), round(lon, 6)
+    lat = transform["top_left_lat"] - float(py) * transform["lat_per_pixel"]
+    lon = transform["top_left_lon"] + float(px) * transform["lon_per_pixel"]
+    # round() returns float when input is float, but explicitly cast to be safe
+    return float(round(lat, 6)), float(round(lon, 6))
 
 
 # ---------------------------------------------------------------------------
@@ -107,10 +112,10 @@ def build_geo_transform_from_geotiff(tiff_path: str) -> dict:
     # t.c = top-left lon, t.f = top-left lat
     # t.a = lon per pixel, t.e = lat per pixel (negative → going south)
     return {
-        "top_left_lat":    t.f,
-        "top_left_lon":    t.c,
-        "lat_per_pixel":   abs(t.e),
-        "lon_per_pixel":   t.a,
-        "image_width_px":  w,
-        "image_height_px": h,
+        "top_left_lat":    float(t.f),
+        "top_left_lon":    float(t.c),
+        "lat_per_pixel":   float(abs(t.e)),
+        "lon_per_pixel":   float(t.a),
+        "image_width_px":  int(w),
+        "image_height_px": int(h),
     }

@@ -12,7 +12,14 @@ Pipeline order:
   vision → store_zone → drone_analysis → drone_decision → drone_dispatch
     → drone_vision → update_people → rescue_decision → admin_resource
     → route_planner → admin_route → communication → END
+
+FIX (2026-03): _to_python() recursively converts all numpy scalar/array types
+to native Python before any state is returned, preventing the LangGraph
+MemorySaver msgpack serialization error:
+  "TypeError: Type is not msgpack serializable: numpy.float64"
 """
+
+import numpy as np
 
 from agents.vision_agent.vision_agent               import analyze_image
 from agents.resource_agent.drone_analysis           import get_most_affected_zones
@@ -28,24 +35,71 @@ from utils.admin_interface  import admin_approval
 from generate_route_map     import generate_route_map
 
 
-# ── Default image metadata (Prayagraj area) ───────────────────────────────────
-# Used when image_meta is not provided in the initial invoke() call.
+# ── Default image metadata (Mumbai area — matches Streamlit defaults) ─────────
 
 _DEFAULT_IMAGE_META = {
-    "center_lat":  25.502483,
-    "center_lon":  81.857394,
-    "coverage_km": 0.5,
+    "center_lat":  19.062061,
+    "center_lon":  72.863542,
+    "coverage_km": 1.6,
     "width_px":    1024,
-    "height_px":   554,
+    "height_px":   522,
 }
 
-# Default base locations for rescue resources (Prayagraj area).
-# Override by including "base_locations" in the initial invoke() state.
 _DEFAULT_BASE_LOCATIONS = {
-    "ambulance":   {"name": "Hospital",   "lat": 19.06546856543151, "lon":  72.86100899070198},
-    "rescue_team": {"name": "Rescue Center", "lat": 19.06847079812735, "lon": 72.85793995490616},
-    "boat":        {"name": "Boat Depot",  "lat": 19.063380373548366, "lon": 72.85538649195271},
+    "ambulance":   {"name": "Hospital",      "lat": 19.06546856543151,  "lon": 72.86100899070198},
+    "rescue_team": {"name": "Rescue Center", "lat": 19.06847079812735,  "lon": 72.85793995490616},
+    "boat":        {"name": "Boat Depot",    "lat": 19.063380373548366, "lon": 72.85538649195271},
 }
+
+
+# ── Numpy → native Python converter ──────────────────────────────────────────
+
+def _to_python(obj):
+    """
+    Recursively convert numpy scalar/array types to native Python so that
+    LangGraph's MemorySaver (msgpack serializer) can persist them.
+
+    Handles:
+      numpy.integer  → int
+      numpy.floating → float
+      numpy.ndarray  → list  (or omitted if it's the flood mask, handled separately)
+      tuple          → tuple (preserves structure)
+      list           → list
+      dict           → dict
+    """
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, dict):
+        return {k: _to_python(v) for k, v in obj.items()}
+    if isinstance(obj, tuple):
+        return tuple(_to_python(v) for v in obj)
+    if isinstance(obj, list):
+        return [_to_python(v) for v in obj]
+    return obj
+
+
+def _clean_routes(routes: list) -> list:
+    """
+    Convert route plans to fully native-Python dicts.
+    Also fixes ETA when it is polluted by the 1e9 penalty weight on blocked roads:
+    if eta_minutes > distance_km * 200, recalculate from distance at 30 km/h.
+    """
+    cleaned = []
+    for r in routes:
+        r2 = _to_python(r)
+        # Fix unreasonable ETA caused by penalty roads
+        dist   = r2.get("distance_km", 0.0)
+        eta    = r2.get("eta_minutes", 0.0)
+        if dist > 0 and eta > dist * 200:
+            # Estimate ETA: 30 km/h average for emergency vehicle in flooded area
+            r2["eta_minutes"] = round(dist / 30.0 * 60.0, 1)
+            r2["eta_note"]    = "ETA estimated at 30 km/h (flood route)"
+        cleaned.append(r2)
+    return cleaned
 
 
 # ── Vision Node ───────────────────────────────────────────────────────────────
@@ -64,39 +118,31 @@ def vision_node(state):
     print("\n[MASTER] ── Vision Agent ─────────────────────────────────")
 
     result     = analyze_image(state["satellite_image"])
-    
     flood_mask = result.get("flood_prob_map")
     height, width = flood_mask.shape[:2]
 
-    # ✅ Step 1: get user-provided or default metadata
     image_meta = state.get("image_meta") or _DEFAULT_IMAGE_META.copy()
 
     if not state.get("image_meta"):
         print(f"[VISION] No image_meta in state — using defaults: {image_meta}")
 
-    # ✅ Step 2: update with computed values
     image_meta.update({
-        "width_px": width,
-        "height_px": height
+        "width_px":  int(width),
+        "height_px": int(height),
     })
 
-    zone_count   = len(result.get("zone_map", {}))
-    flood_zones  = sum(
-        1 for z in result.get("zone_map", {}).values()
-        if z.get("flood_score", 0) >= 0.45
-    )
-    damage_zones = sum(
-        1 for z in result.get("zone_map", {}).values()
-        if z.get("damage_score", 0) >= 0.45
-    )
+    zone_map     = result.get("zone_map", {})
+    zone_count   = len(zone_map)
+    flood_zones  = sum(1 for z in zone_map.values() if z.get("flood_score",  0) >= 0.45)
+    damage_zones = sum(1 for z in zone_map.values() if z.get("damage_score", 0) >= 0.45)
 
     print(f"[VISION] Complete — {zone_count} zones analysed  "
           f"| flood zones: {flood_zones}  | damage zones: {damage_zones}")
 
     return {
-        "zone_map":   result["zone_map"],
-        "flood_mask": result.get("flood_prob_map"),
-        "image_meta": image_meta,
+        "zone_map":   _to_python(zone_map),
+        "flood_mask": flood_mask,           # kept as ndarray for route masking
+        "image_meta": _to_python(image_meta),
     }
 
 
@@ -148,17 +194,21 @@ def rescue_decision_node(state):
         resources = ", ".join(f"{v}× {k}" for k, v in plan.items() if v)
         print(f"  {zone}  →  {resources}")
 
-    return {"rescue_plan": rescue_plan}
+    return {"rescue_plan": _to_python(rescue_plan)}
 
 
 # ── Admin Resource Approval Node ──────────────────────────────────────────────
 
 def admin_resource_node(state):
-    """Ask the admin to approve or reject the rescue plan."""
+    """
+    Ask the admin to approve or reject the rescue plan.
+    In Streamlit mode this node is interrupted BEFORE execution;
+    the UI injects {resource_approved} via graph.update_state().
+    """
     print("\n[ADMIN] ── Resource Allocation Approval ─────────────────")
     approved = admin_approval("Approve rescue resource allocation?")
     print("[ADMIN] Resources " + ("APPROVED ✓" if approved else "REJECTED ✗"))
-    return {"resource_approved": approved}
+    return {"resource_approved": bool(approved)}
 
 
 def resource_approval_router(state):
@@ -177,7 +227,7 @@ def route_planner_node(state):
             state["flood_mask"]      — optional flood probability array
             state["base_locations"]  — optional override for resource origins
 
-    Writes: state["route_plan"]      — list of route dicts
+    Writes: state["route_plan"]      — list of route dicts (all native Python)
             state["route_map_path"]  — absolute path to the generated HTML map
     """
     print("\n[ROUTE PLANNER] ── Planning Routes ──────────────────────")
@@ -204,9 +254,12 @@ def route_planner_node(state):
         flood_threshold      = 0.45,
     )
 
+    # ── Fix numpy types + unreasonable ETAs BEFORE saving to LangGraph state ──
+    routes = _clean_routes(routes)
+
     print_routes(routes)
 
-    # Auto-generate HTML route map immediately after planning
+    # Auto-generate HTML route map
     print("\n[ROUTE MAP] Generating HTML map ...")
     try:
         map_path = generate_route_map(
@@ -220,7 +273,10 @@ def route_planner_node(state):
         print(f"[ROUTE MAP] WARNING: Could not generate map: {e}")
         map_path = None
 
-    return {"route_plan": routes, "route_map_path": map_path}
+    return {
+        "route_plan":     routes,
+        "route_map_path": map_path,
+    }
 
 
 # ── Admin Route Approval Node ─────────────────────────────────────────────────
@@ -228,8 +284,8 @@ def route_planner_node(state):
 def admin_route_node(state):
     """
     Ask the operator to approve the route plan.
-    Approved → communication node.
-    Rejected → loops back to route_planner for re-planning.
+    In Streamlit mode this node is interrupted BEFORE execution;
+    the UI injects {route_approved} via graph.update_state().
     """
     print("\n[ADMIN] ── Route Plan Approval ──────────────────────────")
 
@@ -239,7 +295,7 @@ def admin_route_node(state):
 
     approved = admin_approval("Approve rescue routes?")
     print("[ADMIN] Routes " + ("APPROVED ✓" if approved else "REJECTED ✗ — re-running planner"))
-    return {"route_approved": approved}
+    return {"route_approved": bool(approved)}
 
 
 def route_approval_router(state):
@@ -293,12 +349,12 @@ def communication_node(state):
     )
 
     n_instructions = len(result.get("instructions", {}))
-    n_sms          = len(result.get("sms_results", []))
+    n_sms          = len(result.get("sms_results",  []))
     print(f"[COMMUNICATION AGENT] Complete — "
           f"{n_instructions} instruction(s)  |  {n_sms} SMS(es) sent")
 
     return {
-        "dispatch_result":  result,
+        "dispatch_result":  _to_python(result),
         "dispatch_message": result.get("summary", ""),
     }
 
